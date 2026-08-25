@@ -94,6 +94,13 @@ def _load_dit(checkpoint_path: Path, dtype):
             use_cam_encoder=INFERENCE.use_camera_encoder,
             use_lbm=INFERENCE.use_lbm,
         )
+    
+    if str(checkpoint_path).endswith("_int8_convrot.safetensors"):
+        from .convrot_loader import load_convrot_model
+        # Pass the meta model directly to save RAM. The loader will assign parameters.
+        dit = load_convrot_model(dit, checkpoint_path, "cuda", dtype)
+        return dit.to(dtype=dtype).eval()
+        
     state_dict = _load_checkpoint(checkpoint_path)
     _strict_assign(dit, state_dict, "4DAnyone DiT checkpoint")
     del state_dict
@@ -254,7 +261,16 @@ def load_pipeline(
 
     dtype = torch.bfloat16
     pipe = WanVideoSpaTemPipeline(device=device, torch_dtype=dtype, tokenizer_path=str(assets.tokenizer))
-    pipe.dit = _load_dit(Path(checkpoint_path), dtype)
+    
+    # Auto-fallback to ConvRot INT8 model if it exists
+    ckpt_path = Path(checkpoint_path)
+    int8_ckpt_path = ckpt_path.with_name("model_int8_convrot.safetensors")
+    if int8_ckpt_path.exists():
+        import logging
+        logging.getLogger(__name__).info(f"Auto-switching to INT8 ConvRot model: {int8_ckpt_path}")
+        ckpt_path = int8_ckpt_path
+
+    pipe.dit = _load_dit(ckpt_path, dtype)
     pipe.vae = _load_vae(assets.vae, dtype)
     pipe.text_encoder = _load_text_encoder(assets.text_encoder, dtype)
     pipe.prompter.fetch_models(pipe.text_encoder)
