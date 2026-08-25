@@ -5,7 +5,7 @@ module.exports = {
   description: "Create Anyone in 4D from a Casual Monocular Video. Multi-view video synthesis & open-source 4DGS reconstruction.",
   icon: "icon.png",
   menu: async (kernel, info) => {
-    let installed = info.exists("app/env")
+    let installed = info.exists("app/env") || info.exists("env")
     let running = {
       install: info.running("install.js"),
       start: info.running("start.js"),
