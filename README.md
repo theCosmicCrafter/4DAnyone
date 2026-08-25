@@ -14,40 +14,40 @@
 
 ---
 
-## ✨ Key Enhancements & New Features
+## Key Enhancements & New Features
 
-* 🎨 **Interactive 4-Tab Web UI (`app.py`):**
-  * **Tab 1: 🎥 4D Video Generation:** Video upload, dynamic VRAM presets, camera orbit settings, and live side-by-side video previews.
-  * **Tab 2: 🧊 4DGS Reconstruction & Training Studio:** 1-click NeRFStudio continuous dynamic dataset export (`transforms_4d.json` + masks) and integrated Deformable Gaussian Splatting training.
-  * **Tab 3: 📂 Generated Outputs & Gallery:** Browse past runs, watch 360° videos, inspect metadata, and open folders in File Explorer.
-  * **Tab 4: ⚙️ SMPL-X License & Model Manager:** Automated zero-credential body model detection and archive cleanup.
-* ⚡ **1-Click Pinokio App Launcher (`pinokio.js`):**
+* **Interactive 4-Tab Web UI (`app.py`):**
+  * **Tab 1: 4D Video Generation:** Video upload, dynamic VRAM presets, camera orbit settings, and live side-by-side video previews.
+  * **Tab 2: 4DGS Reconstruction & Training Studio:** 1-click NeRFStudio continuous dynamic dataset export (`transforms_4d.json` + masks) and integrated Deformable Gaussian Splatting training.
+  * **Tab 3: Generated Outputs & Gallery:** Browse past runs, watch 360° videos, inspect metadata, and open folders in File Explorer.
+  * **Tab 4: SMPL-X License & Model Manager:** Automated zero-credential body model detection and archive cleanup.
+* **1-Click Pinokio App Launcher (`pinokio.js`):**
   * Native 1-click install, launch, update, and reset in [Pinokio](https://pinokio.computer/).
   * Automatic GPU hardware and CUDA detection (RTX 50-series Blackwell, RTX 40-series Ada, RTX 30-series Ampere, Apple Silicon, AMD ROCm).
-* 🧠 **VRAM Optimization Suite (<16 GB / Consumer GPU Ready):**
+* **VRAM Optimization Suite (<16 GB / Consumer GPU Ready):**
   * **Proactive Tiled 3D VAE:** Prevents monolithic 28.9 GB VAE allocation spikes, capping peak VRAM to ~8–11 GB.
-  * **DiT Block Streaming & TeaCache:** Dynamic CPU↔GPU layer streaming and timestep-skipping for fast inference.
+  * **DiT Block Streaming & TeaCache:** Dynamic CPU<->GPU layer streaming and timestep-skipping for fast inference.
   * **Dynamic Auto-Calibrated Presets:** Low VRAM (<16 GB), Medium VRAM (24 GB), and High VRAM (32 GB+).
-* 🎭 **1-Click Multi-View Character Background Removal:**
+* **1-Click Multi-View Character Background Removal:**
   * Extract clean isolated character videos on Green Screen, Pure Black, or Pure White backdrops across all generated camera views via BiRefNet.
-* 🧊 **Open-Source 4D Gaussian Splatting (Deformable-GS):**
+* **Open-Source 4D Gaussian Splatting (Deformable-GS):**
   * Native 8-layer sinusoidal deformation field network initialized from Frame 0 visual-hull geometry.
   * Exports standard NeRFStudio / SuperSplat compatible assets with zero proprietary dependencies.
-* 🛡️ **Blackwell RTX 5090 & CUDA 12.8 Compatibility:**
+* **Blackwell RTX 5090 & CUDA 12.8 Compatibility:**
   * Fixed non-contiguous 3D memory stride kernel issues during reference camera proposal (RCP) denoising.
-* 🧹 **Smart Zero-Credential SMPL-X Ingestion & Disk Cleaner:**
+* **Smart Zero-Credential SMPL-X Ingestion & Disk Cleaner:**
   * Automatically detects `models_smplx_v1_1.zip` in `~/Downloads` and safely recycles the archive to save disk space.
-* 🧪 **Automated Test Suite & DevOps:**
+* **Automated Test Suite & DevOps:**
   * 19 unit tests passing (`run_tests.py`), Dockerfile, Docker Compose, Kubernetes, and GitHub Actions CI/CD workflows.
 
 ---
 
-## 🚀 Quickstart
+## Quickstart
 
 ### Option 1: Pinokio 1-Click Launcher (Easiest)
 1. Open [Pinokio](https://pinokio.computer/).
 2. Paste `https://github.com/theCosmicCrafter/4DAnyone` into the search bar.
-3. Click **Install** $\to$ **Start Web UI**.
+3. Click **Install** -> **Start Web UI**.
 
 ### Option 2: Standalone Web UI (Windows / Linux / macOS)
 ```bash
@@ -194,7 +194,7 @@ See the [nerfstudio guide](docs/nerfstudio.md) for details.
 
 ## Citation
 
-If you find 4DAnyone useful or interesting, please cite our work and consider giving the repository a star ⭐:
+If you find 4DAnyone useful or interesting, please cite our work and consider giving the repository a star:
 
 ```bibtex
 @article{jin2026fdanyone,
