@@ -30,7 +30,6 @@ GVHMR_ASSETS = (
     "inputs/checkpoints/gvhmr/gvhmr_siga24_release.ckpt",
     "inputs/checkpoints/hmr2/epoch=10-step=25000.ckpt",
     "inputs/checkpoints/vitpose/vitpose-h-multi-coco.pth",
-    "inputs/checkpoints/yolo/yolov8x.pt",
     "inputs/checkpoints/body_models/smplx/SMPLX_NEUTRAL.npz",
 )
 
@@ -173,8 +172,25 @@ def _run_preprocess(cfg) -> None:
     paths = cfg.paths
 
     if not Path(paths.bbx).exists():
+        import hmr4d.utils.preproc.tracker as gvhmr_tracker
+        from ultralytics import YOLO
+        
+        # Monkey-patch Tracker to use YOLO11x and FP16 inference
+        original_init = gvhmr_tracker.Tracker.__init__
+        def patched_init(self):
+            # Ultralytics will auto-download yolo11x.pt to the current dir if missing
+            self.yolo = YOLO("yolo11x.pt")
+            self.yolo.model.half() # FP16 optimization
+        gvhmr_tracker.Tracker.__init__ = patched_init
+        
         tracker = Tracker()
-        bbx_xyxy = tracker.get_one_track(video_path).float()
+        # Ensure YOLO runs in FP16 autocast
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            bbx_xyxy = tracker.get_one_track(video_path).float()
+        
+        # Restore original init
+        gvhmr_tracker.Tracker.__init__ = original_init
+        
         bbx_xys = get_bbx_xys_from_xyxy(bbx_xyxy, base_enlarge=1.2).float()
         torch.save({"bbx_xyxy": bbx_xyxy, "bbx_xys": bbx_xys}, paths.bbx)
         del tracker
@@ -184,14 +200,18 @@ def _run_preprocess(cfg) -> None:
 
     if not Path(paths.vitpose).exists():
         extractor = VitPoseExtractor()
-        torch.save(extractor.extract(video_path, bbx_xys), paths.vitpose)
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            extracted = extractor.extract(video_path, bbx_xys)
+        torch.save(extracted, paths.vitpose)
         del extractor
     else:
         Log.info("[Preprocess] vitpose from %s", paths.vitpose)
 
     if not Path(paths.vit_features).exists():
         extractor = Extractor()
-        torch.save(extractor.extract_video_features(video_path, bbx_xys), paths.vit_features)
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            features = extractor.extract_video_features(video_path, bbx_xys)
+        torch.save(features, paths.vit_features)
         del extractor
     else:
         Log.info("[Preprocess] vit_features from %s", paths.vit_features)

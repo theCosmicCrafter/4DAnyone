@@ -53,7 +53,6 @@ MODEL_FILES = (
     GVHMR_CHECKPOINT,
     HMR2_CHECKPOINT,
     VITPOSE_CHECKPOINT,
-    YOLO_CHECKPOINT,
     PERCEPTUAL_VGG19,
 )
 
@@ -74,7 +73,6 @@ GVHMR_LINKS = (
     (GVHMR_CHECKPOINT, "inputs/checkpoints/gvhmr/gvhmr_siga24_release.ckpt"),
     (HMR2_CHECKPOINT, "inputs/checkpoints/hmr2/epoch=10-step=25000.ckpt"),
     (VITPOSE_CHECKPOINT, "inputs/checkpoints/vitpose/vitpose-h-multi-coco.pth"),
-    (YOLO_CHECKPOINT, "inputs/checkpoints/yolo/yolov8x.pt"),
     (SMPLX_MODEL, "inputs/checkpoints/body_models/smplx/SMPLX_NEUTRAL.npz"),
 )
 
