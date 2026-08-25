@@ -1,45 +1,71 @@
 <p align="center"><a href="https://4danyone.github.io/"><img src="docs/assets/logo_title.png" width="300" alt="4DAnyone"></a></p>
 
-<h2 align="center">4DAnyone: Create Anyone in 4D from a Casual Monocular Video</h2>
+<h2 align="center">4DAnyone (Enhanced Edition): Create Anyone in 4D from Casual Monocular Video</h2>
 
-<p align="center"><a href="https://4danyone.github.io/"><strong>Project Page</strong></a> &nbsp;|&nbsp; <a href="https://arxiv.org/abs/2608.20335"><strong>Paper</strong></a></p>
+<p align="center"><a href="https://4danyone.github.io/"><strong>Project Page</strong></a> &nbsp;|&nbsp; <a href="https://arxiv.org/abs/2608.20335"><strong>Original Paper</strong></a> &nbsp;|&nbsp; <a href="https://github.com/theCosmicCrafter/4DAnyone"><strong>GitHub Repository</strong></a></p>
 
 <p align="center"><img src="docs/assets/teaser.gif" width="100%" alt="4DAnyone teaser"></p>
 
-<p align="center">4DAnyone turns a casual monocular video into multi-view videos, enabling downstream 4DGS reconstruction.</p>
+> [!NOTE]
+> **About this Enhanced Edition:**
+> The original upstream [4DAnyone](https://github.com/ant-research/4DAnyone) release was a headless, research-only command-line tool that required enterprise hardware (>32 GB VRAM) and manual terminal scripts. 
+> 
+> This repository transforms 4DAnyone into a complete, creator-ready production platform featuring an **interactive 4-tab Gradio Web UI**, a **1-click Pinokio app launcher**, **low-VRAM consumer GPU optimizations (<16 GB)**, a **built-in open-source 4D Gaussian Splatting (Deformable-GS) studio**, **1-click multi-view background removal**, and **robust hardware telemetry**.
 
-## Quickstart & User Interfaces
+---
 
-4DAnyone provides multiple ways to run inference: an interactive Web UI, a 1-click Pinokio app launcher, a standalone batch launcher, and a flexible CLI.
+## ✨ Key Enhancements & New Features
 
-### 1. Interactive Web UI & Standalone Launcher
+* 🎨 **Interactive 4-Tab Web UI (`app.py`):**
+  * **Tab 1: 🎥 4D Video Generation:** Video upload, dynamic VRAM presets, camera orbit settings, and live side-by-side video previews.
+  * **Tab 2: 🧊 4DGS Reconstruction & Training Studio:** 1-click NeRFStudio continuous dynamic dataset export (`transforms_4d.json` + masks) and integrated Deformable Gaussian Splatting training.
+  * **Tab 3: 📂 Generated Outputs & Gallery:** Browse past runs, watch 360° videos, inspect metadata, and open folders in File Explorer.
+  * **Tab 4: ⚙️ SMPL-X License & Model Manager:** Automated zero-credential body model detection and archive cleanup.
+* ⚡ **1-Click Pinokio App Launcher (`pinokio.js`):**
+  * Native 1-click install, launch, update, and reset in [Pinokio](https://pinokio.computer/).
+  * Automatic GPU hardware and CUDA detection (RTX 50-series Blackwell, RTX 40-series Ada, RTX 30-series Ampere, Apple Silicon, AMD ROCm).
+* 🧠 **VRAM Optimization Suite (<16 GB / Consumer GPU Ready):**
+  * **Proactive Tiled 3D VAE:** Prevents monolithic 28.9 GB VAE allocation spikes, capping peak VRAM to ~8–11 GB.
+  * **DiT Block Streaming & TeaCache:** Dynamic CPU↔GPU layer streaming and timestep-skipping for fast inference.
+  * **Dynamic Auto-Calibrated Presets:** Low VRAM (<16 GB), Medium VRAM (24 GB), and High VRAM (32 GB+).
+* 🎭 **1-Click Multi-View Character Background Removal:**
+  * Extract clean isolated character videos on Green Screen, Pure Black, or Pure White backdrops across all generated camera views via BiRefNet.
+* 🧊 **Open-Source 4D Gaussian Splatting (Deformable-GS):**
+  * Native 8-layer sinusoidal deformation field network initialized from Frame 0 visual-hull geometry.
+  * Exports standard NeRFStudio / SuperSplat compatible assets with zero proprietary dependencies.
+* 🛡️ **Blackwell RTX 5090 & CUDA 12.8 Compatibility:**
+  * Fixed non-contiguous 3D memory stride kernel issues during reference camera proposal (RCP) denoising.
+* 🧹 **Smart Zero-Credential SMPL-X Ingestion & Disk Cleaner:**
+  * Automatically detects `models_smplx_v1_1.zip` in `~/Downloads` and safely recycles the archive to save disk space.
+* 🧪 **Automated Test Suite & DevOps:**
+  * 19 unit tests passing (`run_tests.py`), Dockerfile, Docker Compose, Kubernetes, and GitHub Actions CI/CD workflows.
 
-Launch the visual Gradio interface with real-time VRAM telemetry, sample video selector, and 4DGS dataset exporter:
+---
 
+## 🚀 Quickstart
+
+### Option 1: Pinokio 1-Click Launcher (Easiest)
+1. Open [Pinokio](https://pinokio.computer/).
+2. Paste `https://github.com/theCosmicCrafter/4DAnyone` into the search bar.
+3. Click **Install** $\to$ **Start Web UI**.
+
+### Option 2: Standalone Web UI (Windows / Linux / macOS)
 ```bash
-# Start standalone Web UI:
+# Clone the enhanced repository:
+git clone https://github.com/theCosmicCrafter/4DAnyone.git
+cd 4DAnyone
+git submodule update --init third_party/GVHMR
+
+# Setup environment:
+conda create -n 4danyone python=3.11 -y
+conda activate 4danyone
+pip install -r requirements.txt
+
+# Launch interactive Web UI:
 python app.py
 
 # Or on Windows, double-click:
 start_webui.bat
-```
-
-### 2. Pinokio 1-Click Launcher
-
-If using [Pinokio](https://pinokio.computer/), 4DAnyone includes native 1-click install, start, and SMPL-X model management scripts (`pinokio.js`, `install.js`, `start.js`).
-
----
-
-## Installation & CLI Setup
-
-```bash
-git clone https://github.com/ant-research/4DAnyone.git
-cd 4DAnyone
-git submodule update --init third_party/GVHMR
-
-conda create -n 4danyone python=3.11 -y
-conda activate 4danyone
-pip install -r requirements.txt
 ```
 
 ### Verification & Test Suite
