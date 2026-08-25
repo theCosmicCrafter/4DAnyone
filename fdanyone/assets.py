@@ -29,6 +29,7 @@ CHECKPOINT = "4danyone/model.safetensors"
 MHR70_REGRESSOR = "4danyone/smplx_to_goliath70.pt"
 WAN_VAE = "4danyone/Wan2.2_VAE.pth"
 TEXT_ENCODER = "4danyone/models_t5_umt5-xxl-enc-bf16.pth"
+TEXT_ENCODER_FP8 = "4danyone/umt5-xxl-enc-fp8_e4m3fn.safetensors"
 TOKENIZER_DIR = "4danyone/umt5-xxl"
 TOKENIZER_FILES = tuple(
     f"{TOKENIZER_DIR}/{name}"
@@ -127,14 +128,21 @@ def resolve_perceptual_vgg19(model_dir: str | Path = "models") -> Path:
     )
 
 
-def resolve_base_assets(model_dir: str | Path = "models") -> BaseAssets:
+def resolve_base_assets(model_dir: str | Path = "models", prefer_fp8: bool = True) -> BaseAssets:
     """Resolve the local VAE, T5 encoder, and tokenizer."""
 
     root = Path(model_dir).expanduser()
     for relative in TOKENIZER_FILES:
         _require_file(root / relative, "Tokenizer file", "scripts/download_model.py")
+
+    text_encoder_fp8 = root / TEXT_ENCODER_FP8
+    if prefer_fp8 and text_encoder_fp8.is_file():
+        text_encoder = text_encoder_fp8.resolve()
+    else:
+        text_encoder = _require_file(root / TEXT_ENCODER, "Text encoder", "scripts/download_model.py")
+
     return BaseAssets(
         vae=_require_file(root / WAN_VAE, "VAE", "scripts/download_model.py"),
-        text_encoder=_require_file(root / TEXT_ENCODER, "Text encoder", "scripts/download_model.py"),
+        text_encoder=text_encoder,
         tokenizer=(root / TOKENIZER_DIR).expanduser().resolve(),
     )

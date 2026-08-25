@@ -37,12 +37,40 @@ from fdanyone.views import ViewPlan, resolve_view_plan
 LOGGER = logging.getLogger("fdanyone")
 
 
-def _data_paths(data_dir: str, video_path: str) -> tuple[Path, Path, Path]:
+def _generate_dynamic_run_name(
+    video_path: str,
+    view_plan: ViewPlan,
+    seed: int,
+    custom_name: str | None = None,
+    data_dir: str = "data",
+) -> tuple[str, Path]:
+    """Generate a dynamic, collision-free run directory name."""
+    clip_stem = Path(video_path).stem
+    if custom_name and custom_name.strip():
+        candidate_name = custom_name.strip()
+    else:
+        # Structured descriptive name: <clip>_<N>views_s<seed>
+        candidate_name = f"{clip_stem}_{view_plan.num_target_views}views_s{seed}"
+
     data_root = Path(data_dir).expanduser().resolve()
-    run_name = Path(video_path).stem
+    target_dir = data_root / "fdanyone" / candidate_name
+
+    # If target directory already exists, dynamically append timestamp to avoid collision
+    if target_dir.exists():
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        candidate_name = f"{candidate_name}_{timestamp}"
+        target_dir = data_root / "fdanyone" / candidate_name
+
+    return candidate_name, target_dir
+
+
+def _data_paths(data_dir: str, video_path: str, dynamic_name: str | None = None) -> tuple[Path, Path, Path]:
+    data_root = Path(data_dir).expanduser().resolve()
+    clip_stem = Path(video_path).stem
+    run_name = dynamic_name or clip_stem
     return (
         data_root,
-        data_root / "gvhmr" / "results" / run_name,
+        data_root / "gvhmr" / "results" / clip_stem,
         data_root / "fdanyone" / run_name,
     )
 
@@ -184,6 +212,7 @@ def run_pipeline(
     views_per_group: int | str,
     enable_rcp: bool,
     enable_tcr: bool,
+    run_name: str | None = None,
 ) -> dict:
     """Execute inference and publish reusable GVHMR plus 4DAnyone results."""
 
@@ -200,14 +229,20 @@ def run_pipeline(
         enable_rcp=enable_rcp,
         enable_tcr=enable_tcr,
     )
-    data_root, motion_dir, result_dir = _data_paths(data_dir, video_path)
-    run_name = Path(video_path).stem
+    dynamic_name, result_dir = _generate_dynamic_run_name(
+        video_path=video_path,
+        view_plan=view_plan,
+        seed=seed,
+        custom_name=run_name,
+        data_dir=data_dir,
+    )
+    data_root, motion_dir, _ = _data_paths(data_dir, video_path, dynamic_name)
     atomic = AtomicResultDirectory(result_dir)
     # Fail before asset resolution or video decode; the context manager
     # checks again later in case another process creates the path.
     if os.path.lexists(atomic.destination):
         raise ConfigurationError(
-            f"4DAnyone result already exists: {atomic.destination}. Choose a new --data_dir or input filename."
+            f"4DAnyone result already exists: {atomic.destination}. Choose a new --data_dir or --run_name."
         )
     validate_required_video_codecs()
     device, _ = select_cuda_device(device)
@@ -231,7 +266,7 @@ def run_pipeline(
         fps=canonical_fps,
     )
     data_root.mkdir(parents=True, exist_ok=True)
-    scratch = Path(tempfile.mkdtemp(prefix=f".{run_name}.scratch-", dir=data_root))
+    scratch = Path(tempfile.mkdtemp(prefix=f".{dynamic_name}.scratch-", dir=data_root))
     try:
         clip_metadata = scratch / "canonical_clip.json"
         clip.write_metadata(clip_metadata)

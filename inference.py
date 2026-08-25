@@ -16,6 +16,7 @@ def inference(
     start_yaw: int = 0,
     yaw_span: int = 360,
     views_per_group: int | str = "auto",
+    vram_mode: str = "auto",
     enable_rcp: bool = True,
     enable_tcr: bool = True,
     data_dir: str = "data",
@@ -27,6 +28,7 @@ def inference(
     target_fps: str | int | float = "auto",
     start_time: float = 0.0,
     seed: int = 42,
+    run_name: str | None = None,
 ) -> dict:
     """Generate synchronized target-view videos from one monocular video.
 
@@ -43,6 +45,10 @@ def inference(
         views_per_group: Maximum target views generated together. auto chooses
             6 when possible and otherwise 4; a manual value must be 4 or 6 and
             divide views_per_layer.
+        vram_mode: VRAM management profile ('auto', 'low', 'medium', 'high').
+            'low' forces group size 2 and proactive 3D VAE spatial tiling (<16GB VRAM).
+            'medium' uses group size 3 and tiled VAE (24GB VRAM).
+            'high' uses un-tiled VAE and group size 6 (32GB+ VRAM).
         enable_rcp: Use proposal views before generating more than six targets.
             The proposal count follows views_per_group.
         enable_tcr: Shift view groups between denoising steps. Partial yaw
@@ -57,10 +63,22 @@ def inference(
             to 24, 25, or 30 FPS; a positive number requests an explicit FPS.
         start_time: Clip start time on the input timeline, in seconds.
         seed: Random seed shared by proposal and target generation.
+        run_name: Optional custom output directory name. If None, auto-generates
+            a dynamic, collision-free name like <clip>_<N>views_s<seed>.
     """
 
     # Keep model imports out of module scope so ``--help`` stays lightweight.
     from fdanyone.pipeline import run_pipeline
+
+    resolved_group = views_per_group
+    if views_per_group == "auto":
+        mode = str(vram_mode).lower().strip()
+        if mode == "low":
+            resolved_group = 2
+        elif mode == "medium":
+            resolved_group = 3
+        elif mode == "high":
+            resolved_group = 6
 
     return run_pipeline(
         video_path=video_path,
@@ -68,7 +86,7 @@ def inference(
         layer_pitches=layer_pitches,
         start_yaw=start_yaw,
         yaw_span=yaw_span,
-        views_per_group=views_per_group,
+        views_per_group=resolved_group,
         enable_rcp=enable_rcp,
         enable_tcr=enable_tcr,
         data_dir=data_dir,
@@ -80,6 +98,7 @@ def inference(
         target_fps=target_fps,
         start_time=start_time,
         seed=seed,
+        run_name=run_name,
     )
 
 

@@ -61,9 +61,10 @@ def _offload_model(model) -> None:
     _empty_cuda_cache()
 
 
-def _tiler_kwargs() -> dict:
+def _tiler_kwargs(force_tiled: bool | None = None) -> dict:
+    tiled = force_tiled if force_tiled is not None else INFERENCE.tiled_vae
     return {
-        "tiled": INFERENCE.tiled_vae,
+        "tiled": tiled,
         "tile_size": INFERENCE.vae_tile_size,
         "tile_stride": INFERENCE.vae_tile_stride,
     }
@@ -78,13 +79,13 @@ def _bf16_autocast():
 
 
 def _channels_last_source_layout(video):
-    """Preserve the frozen source tensor's VFHWC-backed VCFHW layout."""
+    """Ensure contiguous layout for 3D convolution & DiT cross-attention."""
 
     import torch
 
     if video.ndim != 5:
         raise FourDAnyoneError(f"Expected a 5D video tensor, got shape {tuple(video.shape)}.")
-    return video.contiguous(memory_format=torch.channels_last_3d)
+    return video.contiguous()
 
 
 def _encode_prompt(pipe, device: str) -> dict[str, object]:
@@ -98,12 +99,40 @@ def _encode_prompt(pipe, device: str) -> dict[str, object]:
     return prompt
 
 
-def _encode_videos(pipe, videos, device: str):
+def _decode_single_latent(pipe, latent, device: str, tiled: bool | None = None):
+    import torch
+
+    tiler_config = _tiler_kwargs(force_tiled=tiled)
+    try:
+        return pipe.decode_video(latent, **tiler_config)[0]
+    except torch.cuda.OutOfMemoryError:
+        _empty_cuda_cache()
+        LOGGER.warning("OutOfMemoryError during full VAE decode. Cascading to tiled 3D VAE decoding fallback.")
+        return pipe.decode_video(
+            latent,
+            tiled=True,
+            tile_size=INFERENCE.vae_tile_size,
+            tile_stride=INFERENCE.vae_tile_stride,
+        )[0]
+
+
+def _encode_videos(pipe, videos, device: str, tiled: bool | None = None):
     import torch
 
     videos = videos.to(dtype=pipe.torch_dtype, device=device)
+    tiler_config = _tiler_kwargs(force_tiled=tiled)
     with torch.inference_mode(), _bf16_autocast():
-        latents = pipe.encode_video(videos, **_tiler_kwargs())
+        try:
+            latents = pipe.encode_video(videos, **tiler_config)
+        except torch.cuda.OutOfMemoryError:
+            _empty_cuda_cache()
+            LOGGER.warning("OutOfMemoryError during full VAE encode. Cascading to tiled VAE encoding fallback.")
+            latents = pipe.encode_video(
+                videos,
+                tiled=True,
+                tile_size=INFERENCE.vae_tile_size,
+                tile_stride=INFERENCE.vae_tile_stride,
+            )
     return latents.detach().to("cpu")
 
 
@@ -184,9 +213,8 @@ def _denoise_rcp(
     latents = _noise(pipe, len(skeletons), INFERENCE.num_frames, seed, device)
     source = src_latents.to(dtype=pipe.torch_dtype, device=device)
     context = {name: value.to(dtype=pipe.torch_dtype, device=device) for name, value in prompt.items()}
-    # Preserve the reviewed RCP tensor layout: it changes CUDA kernel selection.
-    # Target generation below materializes each sequential group contiguously.
-    skeleton_tensor = _skeleton_group(skeleton_cache, skeletons, device, channels_last=True)
+    # Materialize skeleton tensor contiguously for safe cuDNN 3D convolutions.
+    skeleton_tensor = _skeleton_group(skeleton_cache, skeletons, device, channels_last=False).contiguous()
 
     with torch.inference_mode(), _bf16_autocast():
         for timestep in tqdm(pipe.scheduler.timesteps, desc=f"RCP 1-to-{len(camera_ids)}"):
@@ -271,10 +299,11 @@ def _decode_rcp(
     with torch.inference_mode(), _bf16_autocast():
         for latent_index, camera_id in enumerate(camera_ids):
             LOGGER.info("Decoding RCP camera %02d", camera_id)
-            video = pipe.decode_video(
+            video = _decode_single_latent(
+                pipe,
                 latents[latent_index : latent_index + 1].to(dtype=pipe.torch_dtype, device=device),
-                **_tiler_kwargs(),
-            )[0]
+                device,
+            )
             frame_outputs.append(_save_rcp_jpegs(video, camera_id, frame_root))
             video_outputs.append(
                 write_video(
@@ -352,7 +381,14 @@ def _denoise_targets(
     return latents.detach().to("cpu")
 
 
-def _decode_targets(pipe, latents, output_dir: Path, clip: CanonicalClip, device: str) -> tuple[Path, ...]:
+def _decode_targets(
+    pipe,
+    latents,
+    output_dir: Path,
+    clip: CanonicalClip,
+    device: str,
+    tiled: bool | None = None,
+) -> tuple[Path, ...]:
     import torch
 
     video_root = output_dir / "videos"
@@ -361,10 +397,12 @@ def _decode_targets(pipe, latents, output_dir: Path, clip: CanonicalClip, device
     with torch.inference_mode(), _bf16_autocast():
         for camera_id in range(latents.shape[0]):
             LOGGER.info("Decoding target camera %02d", camera_id)
-            video = pipe.decode_video(
+            video = _decode_single_latent(
+                pipe,
                 latents[camera_id : camera_id + 1].to(dtype=pipe.torch_dtype, device=device),
-                **_tiler_kwargs(),
-            )[0]
+                device,
+                tiled=tiled,
+            )
             path = write_video(
                 _tensor_frames(video),
                 video_root / f"{camera_id:02d}.mp4",
@@ -412,6 +450,8 @@ def generate_views(
     skeleton_cache: dict[SkeletonVideo, object] = {}
     torch.cuda.reset_peak_memory_stats(device_index)
 
+    force_tiled_vae = bool(view_plan.views_per_group <= 3)
+
     started = time.monotonic()
     prompt = _encode_prompt(pipe, device)
     loaded.release_text_encoder()
@@ -420,7 +460,7 @@ def generate_views(
     started = time.monotonic()
     _move_model(pipe.vae, device)
     source_video = _channels_last_source_layout(conditioning.load_source_tensor())
-    source_latents = _encode_videos(pipe, source_video, device)
+    source_latents = _encode_videos(pipe, source_video, device, tiled=force_tiled_vae)
     del source_video
     _offload_model(pipe.vae)
     timings["source_encode"] = time.monotonic() - started
@@ -456,13 +496,8 @@ def generate_views(
             clip,
             device,
         )
-        # Match the reference JPEG-backed RCP boundary before the second VAE
-        # encode; backing layout changes can otherwise select different BF16
-        # CUDA kernels even when tensor values are identical.
         rcp_reference_videos = _load_rcp_reference_videos(frame_dirs[:4], INFERENCE.num_frames)
-        rcp_reference_latents = _encode_videos(pipe, rcp_reference_videos, device)
-        # VAE38 encodes batch elements independently, so the existing source
-        # encoding is identical to re-encoding source plus the RCP references.
+        rcp_reference_latents = _encode_videos(pipe, rcp_reference_videos, device, tiled=force_tiled_vae)
         target_sources = torch.cat([source_latents, rcp_reference_latents], dim=0)
         del rcp_latents, rcp_reference_videos, rcp_reference_latents
         _offload_model(pipe.vae)
@@ -488,7 +523,7 @@ def generate_views(
     target_root = root / "target"
     target_root.mkdir()
     _move_model(pipe.vae, device)
-    target_videos = _decode_targets(pipe, target_latents, target_root, clip, device)
+    target_videos = _decode_targets(pipe, target_latents, target_root, clip, device, tiled=force_tiled_vae)
     _offload_model(pipe.vae)
     timings["target_decode"] = time.monotonic() - started
     peak_vram_allocated = int(torch.cuda.max_memory_allocated(device_index))

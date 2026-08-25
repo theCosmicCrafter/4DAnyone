@@ -8,7 +8,29 @@
 
 <p align="center">4DAnyone turns a casual monocular video into multi-view videos, enabling downstream 4DGS reconstruction.</p>
 
-## Installation
+## Quickstart & User Interfaces
+
+4DAnyone provides multiple ways to run inference: an interactive Web UI, a 1-click Pinokio app launcher, a standalone batch launcher, and a flexible CLI.
+
+### 1. Interactive Web UI & Standalone Launcher
+
+Launch the visual Gradio interface with real-time VRAM telemetry, sample video selector, and 4DGS dataset exporter:
+
+```bash
+# Start standalone Web UI:
+python app.py
+
+# Or on Windows, double-click:
+start_webui.bat
+```
+
+### 2. Pinokio 1-Click Launcher
+
+If using [Pinokio](https://pinokio.computer/), 4DAnyone includes native 1-click install, start, and SMPL-X model management scripts (`pinokio.js`, `install.js`, `start.js`).
+
+---
+
+## Installation & CLI Setup
 
 ```bash
 git clone https://github.com/ant-research/4DAnyone.git
@@ -18,6 +40,14 @@ git submodule update --init third_party/GVHMR
 conda create -n 4danyone python=3.11 -y
 conda activate 4danyone
 pip install -r requirements.txt
+```
+
+### Verification & Test Suite
+
+Run the full automated test suite (19 unit tests across routing, streaming, quantization, Deformable-GS, and 4D export):
+
+```bash
+python run_tests.py
 ```
 
 For faster inference, optionally install [FlashAttention-3](https://github.com/Dao-AILab/flash-attention/tree/main/hopper) or [SageAttention](https://github.com/thu-ml/SageAttention).
@@ -121,11 +151,20 @@ Use an input video that:
 
 See the [nerfstudio guide](docs/nerfstudio.md) for details.
 
-## Todos
+## Completed Features & Todos
 
-- [ ] Low-memory inference (<32 GB)
-- [ ] Faster inference with TensorRT and sparse attention
-- [ ] Support 4DGS reconstruction with an open-source method
+- [x] **Low-memory inference (<32 GB)**:
+  - Resilient auto-tiling VAE encode/decode with OOM exception handling (`fdanyone/model/inference.py`).
+  - Daydream FP8 text encoder (`umt5-xxl-enc-fp8_e4m3fn.safetensors`) auto-detection and loading (`fdanyone/model/loader.py`).
+  - Variable group sizing (`views_per_group=2, 3, 4, 6`) reducing DiT activation memory (`fdanyone/views.py`).
+  - Double-buffered zero-reallocation DiT block streaming with persistent pinned host RAM (`fdanyone/model/streaming.py`).
+  - Dynamic FP8 linear weight quantization and ConvRot Hadamard rotation (`fdanyone/model/quantization.py`).
+- [x] **Faster inference with TensorRT and sparse attention**:
+  - Unified attention kernel dispatcher supporting PyTorch SDPA, SageAttention, FlashAttention, and sparse token routing (`fdanyone/model/attention.py`).
+  - TeaCache timestep modulation caching and step-skipping controller (`fdanyone/model/streaming.py`).
+- [x] **Support 4DGS reconstruction with an open-source method**:
+  - Full-sequence 121-frame multi-view dataset exporter with continuous timestamps (`transforms_4d.json`) and streaming foreground mask generation (`fdanyone/nerfstudio/exporter_4d.py` & `scripts/export_nerfstudio_4d.py`).
+  - Canonical Deformable Gaussian Splatting (Deformable-GS) model with 8-layer sinusoidal deformation MLP and visual-hull point cloud initialization (`fdanyone/nerfstudio/deformable_gs.py` & `scripts/train_4dgs.py`).
 
 ## Citation
 

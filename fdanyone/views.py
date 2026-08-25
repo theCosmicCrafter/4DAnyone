@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from fdanyone.config import CAMERA
 from fdanyone.errors import ConfigurationError
 
-VALID_VIEWS_PER_GROUP = (4, 6)
+VALID_VIEWS_PER_GROUP = (2, 3, 4, 6)
 MIN_PITCH = -15
 MAX_PITCH = 45
 
@@ -130,7 +130,36 @@ def _integer(name: str, value: object) -> int:
 
 
 def _layer_pitches(value: object) -> tuple[int, ...]:
-    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence) or not value:
+    if isinstance(value, int) and not isinstance(value, bool):
+        value = [value]
+    elif isinstance(value, (str, bytes)):
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+        s = value.strip().strip("'\"").strip()
+        if s.startswith("[") and s.endswith("]"):
+            import json
+            try:
+                value = json.loads(s)
+            except Exception:
+                s = s[1:-1].strip()
+                value = [int(p.strip()) for p in s.split(",") if p.strip()]
+        elif s.startswith("(") and s.endswith(")"):
+            s = s[1:-1].strip()
+            value = [int(p.strip()) for p in s.split(",") if p.strip()]
+        elif "," in s:
+            try:
+                value = [int(p.strip()) for p in s.split(",") if p.strip()]
+            except ValueError:
+                raise ConfigurationError(f"layer_pitches contains non-integer values: {value!r}.") from None
+        elif s:
+            try:
+                value = [int(s)]
+            except ValueError:
+                raise ConfigurationError(f"layer_pitches must be an integer or list of integers, got {value!r}.") from None
+        else:
+            value = []
+
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or not value:
         raise ConfigurationError("layer_pitches must be a non-empty list of integer degrees.")
     pitches = tuple(_integer("Each layer pitch", pitch) for pitch in value)
     if len(set(pitches)) != len(pitches):
@@ -148,7 +177,7 @@ def _group_size(value: int | str, views_per_layer: int) -> int:
         if value.lower() == "auto":
             divisors = tuple(size for size in VALID_VIEWS_PER_GROUP if views_per_layer % size == 0)
             if not divisors:
-                raise ConfigurationError(f"views_per_layer ({views_per_layer}) must be divisible by 4 or 6.")
+                raise ConfigurationError(f"views_per_layer ({views_per_layer}) must be divisible by 2, 3, 4, or 6.")
             return max(divisors)
         try:
             value = int(value)

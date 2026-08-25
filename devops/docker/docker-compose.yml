@@ -1,0 +1,41 @@
+version: "3.8"
+
+services:
+  fdanyone:
+    build:
+      context: ../..
+      dockerfile: devops/docker/Dockerfile
+    image: 4danyone:latest
+    container_name: 4danyone-inference
+
+    # GPU passthrough — requires nvidia-container-toolkit
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    # Persistent volumes
+    volumes:
+      # Input/output videos
+      - ../../data:/app/data
+      # Model checkpoints (avoids re-downloading)
+      - fdanyone-models:/app/models
+      # SMPL-X files (must be pre-downloaded due to license)
+      - ${SMPLX_PATH:-./smplx}:/app/models/smplx
+
+    # Environment
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    # Override default CMD for interactive use
+    # Example: docker compose run fdanyone --video_path "data/source/my_video.mp4" --views_per_layer 24
+    stdin_open: true
+    tty: true
+
+volumes:
+  fdanyone-models:
+    driver: local

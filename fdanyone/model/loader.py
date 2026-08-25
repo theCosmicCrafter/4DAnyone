@@ -227,7 +227,11 @@ def _load_text_encoder(path: Path, dtype):
 
     from fdanyone.vendor.diffsynth.models.wan_video_text_encoder import WanTextEncoder
 
-    state_dict = torch.load(path, map_location="cpu", weights_only=True)
+    if path.suffix == ".safetensors":
+        from safetensors.torch import load_file
+        state_dict = load_file(str(path), device="cpu")
+    else:
+        state_dict = torch.load(path, map_location="cpu", weights_only=True)
     state_dict = WanTextEncoder.state_dict_converter().from_civitai(state_dict)
     with torch.device("meta"):
         text_encoder = WanTextEncoder()

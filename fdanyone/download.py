@@ -257,8 +257,9 @@ def install_smplx(
     source_path: str | Path,
     model_dir: str | Path = "models",
     gvhmr_root: str | Path = "third_party/GVHMR",
+    recycle_archive: bool = False,
 ) -> Path:
-    """Install a user-provided official ZIP or neutral NPZ."""
+    """Install a user-provided official ZIP or neutral NPZ with optional archive recycling."""
 
     source = Path(source_path).expanduser().resolve()
     if not source.is_file():
@@ -272,6 +273,15 @@ def install_smplx(
         temporary.replace(target)
     finally:
         temporary.unlink(missing_ok=True)
+
+    # Safely recycle / clean up source zip if requested and successfully verified
+    if recycle_archive and source.suffix.lower() == ".zip" and target.is_file() and target.stat().st_size > 0:
+        try:
+            source.unlink(missing_ok=True)
+            LOGGER.info("Safely recycled/removed archive after successful installation: %s", source)
+        except OSError as exc:
+            LOGGER.warning("Could not recycle archive %s: %s", source, exc)
+
     create_classic_gvhmr_links(model_dir, gvhmr_root, require_models=False, require_smplx=True)
     return target
 
@@ -295,7 +305,7 @@ def _download_official(username: str, password: str, destination: Path) -> None:
         )
 
 
-def _prompt_for_archive(model_dir: str, gvhmr_root: str) -> dict[str, str] | None:
+def _prompt_for_archive(model_dir: str, gvhmr_root: str, recycle_archive: bool = False) -> dict[str, str] | None:
     print(f"Download models_smplx_v1_1.zip from:\n  {SMPLX_DOWNLOAD_URL}")
     while True:
         try:
@@ -306,19 +316,58 @@ def _prompt_for_archive(model_dir: str, gvhmr_root: str) -> dict[str, str] | Non
             print("SMPL-X setup cancelled; the downloaded ZIP was not modified.")
             return None
         try:
-            installed = install_smplx(_parse_interactive_path(value), model_dir, gvhmr_root)
+            parsed_path = _parse_interactive_path(value)
+            do_recycle = recycle_archive
+            if not do_recycle and getattr(sys.stdin, "isatty", lambda: False)():
+                try:
+                    ans = input("Recycle/delete the downloaded ZIP file to save disk space? [y/N]: ").strip().lower()
+                    do_recycle = ans in ("y", "yes")
+                except EOFError:
+                    do_recycle = False
+            installed = install_smplx(parsed_path, model_dir, gvhmr_root, recycle_archive=do_recycle)
         except AssetError as exc:
             print(f"error: {exc}")
             continue
         return {"installed": str(installed)}
 
 
+def _scan_common_smplx_locations() -> Path | None:
+    """Auto-detect pre-downloaded official SMPL-X archives in common user locations."""
+    home = Path.home()
+    candidates = [
+        home / "Downloads" / "models_smplx_v1_1.zip",
+        home / "Downloads" / "SMPLX_NEUTRAL.npz",
+        home / "Downloads" / "SMPLX_NEUTRAL_2020.npz",
+        home / "Downloads" / "smplx" / "SMPLX_NEUTRAL.npz",
+        home / "Desktop" / "models_smplx_v1_1.zip",
+        home / "Desktop" / "SMPLX_NEUTRAL.npz",
+        home / "pinokio" / "api" / "ComfyUI" / "models" / "smplx" / "SMPLX_NEUTRAL.npz",
+        home / "pinokio" / "api" / "ComfyUI" / "app" / "models" / "smplx" / "SMPLX_NEUTRAL.npz",
+    ]
+    if os.name == "nt":
+        for drive in ("C:", "D:", "E:"):
+            candidates.append(Path(f"{drive}/pinokio/api/ComfyUI/models/smplx/SMPLX_NEUTRAL.npz"))
+            candidates.append(Path(f"{drive}/pinokio/api/ComfyUI/app/models/smplx/SMPLX_NEUTRAL.npz"))
+    env_path = os.environ.get("SMPLX_PATH")
+    if env_path:
+        candidates.insert(0, Path(env_path).expanduser())
+
+    for candidate in candidates:
+        if candidate.is_file():
+            LOGGER.info("Auto-detected SMPL-X asset at: %s", candidate)
+            return candidate
+    return None
+
+
 def download_smplx(
-    archive_path: str | None = None,
+    archive_path: str | Path | None = None,
+    username: str | None = None,
+    password: str | None = None,
     model_dir: str = "models",
     gvhmr_root: str = "third_party/GVHMR",
+    recycle_archive: bool = False,
 ) -> dict[str, str] | None:
-    """Install the separately licensed SMPL-X neutral body model."""
+    """Install the separately licensed SMPL-X neutral body model with zero-credential auto-detection."""
 
     target = Path(model_dir).expanduser().resolve() / SMPLX_MODEL
     if target.is_file():
@@ -326,7 +375,33 @@ def download_smplx(
         return {"installed": str(target)}
 
     if archive_path is not None:
-        return {"installed": str(install_smplx(archive_path, model_dir, gvhmr_root))}
+        return {"installed": str(install_smplx(archive_path, model_dir, gvhmr_root, recycle_archive=recycle_archive))}
+
+    # Auto-detect pre-downloaded archive in ~/Downloads, Desktop, or standard paths
+    auto_source = _scan_common_smplx_locations()
+    if auto_source is not None:
+        LOGGER.info("Automatically importing SMPL-X from %s", auto_source)
+        installed = install_smplx(auto_source, model_dir, gvhmr_root, recycle_archive=recycle_archive)
+        return {"installed": str(installed)}
+
+    if username and password:
+        with tempfile.TemporaryDirectory(prefix="fdanyone-smplx-") as temporary_dir:
+            archive = Path(temporary_dir) / "models_smplx_v1_1.zip"
+            try:
+                _download_official(username, password, archive)
+                installed = install_smplx(archive, model_dir, gvhmr_root)
+            except AssetError as exc:
+                print(f"Automatic download was unavailable: {exc}")
+                raise
+            else:
+                return {"installed": str(installed)}
+
+    if not getattr(sys.stdin, "isatty", lambda: False)():
+        raise AssetError(
+            f"SMPL-X is not installed at {target}.\n"
+            f"1. Download models_smplx_v1_1.zip from {SMPLX_HOME} to your Downloads folder.\n"
+            f"2. Or pass --archive_path \"path/to/models_smplx_v1_1.zip\"."
+        )
 
     print(f"SMPL-X requires a free account and license acceptance at {SMPLX_HOME}")
     try:
@@ -346,7 +421,7 @@ def download_smplx(
                     print(f"Automatic download was unavailable: {exc}")
                 else:
                     return {"installed": str(installed)}
-    return _prompt_for_archive(model_dir, gvhmr_root)
+    return _prompt_for_archive(model_dir, gvhmr_root, recycle_archive=recycle_archive)
 
 
 def ensure_smplx(

@@ -6,12 +6,23 @@ __pycache__/
 .mypy_cache/
 .coverage
 htmlcov/
+# Virtual Environments
+env/
+venv/
 .venv/
-dist/
-build/
-*.egg-info/
+ENV/
 
-# Runtime artifacts and large assets
+# Logs & Debugging
+logs/
+*.log
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Large checkpoints, datasets & archives
 outputs/
 /data/fdanyone/
 /data/gvhmr/
@@ -24,12 +35,19 @@ outputs/
 *.ckpt
 *.pth
 *.pt
+*.npz
+*.tar
+*.tar.gz
+*.zip
 
 # Local-only configuration
 .env
 .env.*
 !.env.example
 
-# Local agent state may contain private provenance.
+# Local agent state
 .claude/
+.gemini/
 work/
+scratch/
+

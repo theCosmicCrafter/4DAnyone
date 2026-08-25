@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fdanyone-inference
+  labels:
+    app: fdanyone
+    component: inference
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fdanyone
+      component: inference
+  template:
+    metadata:
+      labels:
+        app: fdanyone
+        component: inference
+    spec:
+      # Schedule on GPU nodes
+      nodeSelector:
+        cloud.google.com/gke-accelerator: nvidia-l4
+        # Alternative for AWS: nvidia.com/gpu.product: NVIDIA-A10G
+        # Alternative for Azure: kubernetes.azure.com/accelerator: nvidia
+
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+      containers:
+        - name: fdanyone
+          image: ghcr.io/thecosmiccrafter/4danyone:latest
+          command: ["python", "inference.py"]
+          args:
+            - "--video_path"
+            - "/data/input/video.mp4"
+            - "--views_per_layer"
+            - "6"
+
+          resources:
+            requests:
+              cpu: "4"
+              memory: "16Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "8"
+              memory: "48Gi"
+              nvidia.com/gpu: "1"
+
+          env:
+            - name: CUDA_VISIBLE_DEVICES
+              value: "0"
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: "expandable_segments:True"
+
+          volumeMounts:
+            - name: data-volume
+              mountPath: /data
+            - name: models-volume
+              mountPath: /app/models
+
+      restartPolicy: OnFailure
+
+      volumes:
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: fdanyone-data-pvc
+        - name: models-volume
+          persistentVolumeClaim:
+            claimName: fdanyone-models-pvc
+
+---
+# PersistentVolumeClaims
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fdanyone-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: standard-rwo
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fdanyone-models-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: standard-rwo

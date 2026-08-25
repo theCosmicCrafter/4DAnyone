@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install linting tools
+        run: |
+          pip install ruff pyright
+
+      - name: Run ruff (linter)
+        run: ruff check fdanyone/ --output-format=github
+
+      - name: Run ruff (formatter check)
+        run: ruff format fdanyone/ --check
+
+      - name: Run pyright (type checker)
+        run: pyright fdanyone/
+        continue-on-error: true  # advisory until baseline is established
+
+  smoke-test:
+    name: Import Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (CPU-only torch)
+        run: |
+          pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt --no-deps || true
+
+      - name: Verify CLI help
+        run: python inference.py --help
+
+      - name: Verify core imports
+        run: |
+          python -c "from fdanyone.config import InferenceConfig; print('config OK')"
+          python -c "from fdanyone.views import ViewPlan; print('views OK')"
+          python -c "from fdanyone.errors import FourDAnyoneError; print('errors OK')"
+
+  security:
+    name: Dependency Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit dependencies
+        run: pip-audit -r requirements.txt --ignore-vuln PYSEC-2024-* || true
+        continue-on-error: true  # advisory scan
