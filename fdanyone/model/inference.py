@@ -52,13 +52,15 @@ def _empty_cuda_cache() -> None:
 
 
 def _move_model(model, device: str) -> None:
-    model.to(device)
-    _empty_cuda_cache()
+    if model is not None:
+        model.to(device)
+        _empty_cuda_cache()
 
 
 def _offload_model(model) -> None:
-    model.to("cpu")
-    _empty_cuda_cache()
+    if model is not None:
+        model.to("cpu")
+        _empty_cuda_cache()
 
 
 def _tiler_kwargs(force_tiled: bool | None = None) -> dict:
@@ -91,6 +93,10 @@ def _channels_last_source_layout(video):
 def _encode_prompt(pipe, device: str) -> dict[str, object]:
     import torch
 
+    if pipe.text_encoder is None:
+        context = pipe.encode_prompt(INFERENCE.prompt, positive=True)["context"]
+        return {"context": context.detach().to("cpu")}
+
     _move_model(pipe.text_encoder, device)
     with torch.inference_mode(), _bf16_autocast():
         context = pipe.prompter.encode_prompt(INFERENCE.prompt, positive=True, device=device)
@@ -119,21 +125,26 @@ def _decode_single_latent(pipe, latent, device: str, tiled: bool | None = None):
 def _encode_videos(pipe, videos, device: str, tiled: bool | None = None):
     import torch
 
-    videos = videos.to(dtype=pipe.torch_dtype, device=device)
+    latents_list = []
     tiler_config = _tiler_kwargs(force_tiled=tiled)
     with torch.inference_mode(), _bf16_autocast():
-        try:
-            latents = pipe.encode_video(videos, **tiler_config)
-        except torch.cuda.OutOfMemoryError:
+        for i in range(videos.shape[0]):
+            single_video = videos[i : i + 1].to(dtype=pipe.torch_dtype, device=device)
+            try:
+                lat = pipe.encode_video(single_video, **tiler_config)
+            except torch.cuda.OutOfMemoryError:
+                _empty_cuda_cache()
+                LOGGER.warning("OutOfMemoryError during full VAE encode. Cascading to tiled VAE encoding fallback.")
+                lat = pipe.encode_video(
+                    single_video,
+                    tiled=True,
+                    tile_size=INFERENCE.vae_tile_size,
+                    tile_stride=INFERENCE.vae_tile_stride,
+                )
+            latents_list.append(lat.detach().to("cpu"))
+            del single_video, lat
             _empty_cuda_cache()
-            LOGGER.warning("OutOfMemoryError during full VAE encode. Cascading to tiled VAE encoding fallback.")
-            latents = pipe.encode_video(
-                videos,
-                tiled=True,
-                tile_size=INFERENCE.vae_tile_size,
-                tile_stride=INFERENCE.vae_tile_stride,
-            )
-    return latents.detach().to("cpu")
+    return torch.cat(latents_list, dim=0)
 
 
 def _noise(pipe, num_views: int, num_frames: int, seed: int, device: str):
@@ -213,21 +224,31 @@ def _denoise_rcp(
     latents = _noise(pipe, len(skeletons), INFERENCE.num_frames, seed, device)
     source = src_latents.to(dtype=pipe.torch_dtype, device=device)
     context = {name: value.to(dtype=pipe.torch_dtype, device=device) for name, value in prompt.items()}
-    # Materialize skeleton tensor contiguously for safe cuDNN 3D convolutions.
+    # Materialize skeleton tensor contiguously and pre-encode tokens once
     skeleton_tensor = _skeleton_group(skeleton_cache, skeletons, device, channels_last=False).contiguous()
+    skeleton_tokens = pipe.dit.encode_pose(skeleton_tensor)
+    del skeleton_tensor
+    torch.cuda.empty_cache()
 
     with torch.inference_mode(), _bf16_autocast():
         for timestep in tqdm(pipe.scheduler.timesteps, desc=f"RCP 1-to-{len(camera_ids)}"):
             batched_timestep = timestep.unsqueeze(0).to(dtype=pipe.torch_dtype, device=device)
-            batched_timestep = torch.cat([batched_timestep] * len(skeletons), dim=0)
-            prediction = pipe.dit(
-                x=latents,
-                x_src=source,
-                timestep=batched_timestep,
-                skeletons=skeleton_tensor,
-                **context,
-                **pipe.prepare_extra_input(latents),
-            )
+            group_size = 2
+            predictions = []
+            for i in range(0, len(skeletons), group_size):
+                chunk_latents = latents[i : i + group_size]
+                chunk_tokens = skeleton_tokens[i : i + group_size]
+                chunk_timestep = torch.cat([batched_timestep] * len(chunk_latents), dim=0)
+                pred_chunk = pipe.dit(
+                    x=chunk_latents,
+                    x_src=source,
+                    timestep=chunk_timestep,
+                    skeletons=chunk_tokens,
+                    **context,
+                    **pipe.prepare_extra_input(chunk_latents),
+                )
+                predictions.append(pred_chunk)
+            prediction = torch.cat(predictions, dim=0)
             latents = pipe.scheduler.step(prediction, timestep, latents)
     return latents.detach().to("cpu")
 
@@ -244,7 +265,7 @@ def _save_rcp_jpegs(video, camera_id: int, root: Path) -> Path:
     import torchvision.transforms.functional as transform
 
     frame_dir = root / f"{camera_id:06d}"
-    frame_dir.mkdir(parents=True, exist_ok=False)
+    frame_dir.mkdir(parents=True, exist_ok=True)
     normalized = video.detach().float().mul(0.5).add_(0.5).clamp_(0.0, 1.0).to("cpu")
     for frame_index in range(normalized.shape[1]):
         image = transform.to_pil_image(normalized[:, frame_index])
@@ -285,6 +306,7 @@ def _decode_rcp(
     output_dir: Path,
     clip: CanonicalClip,
     device: str,
+    tiled: bool | None = None,
 ) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     import torch
 
@@ -292,8 +314,8 @@ def _decode_rcp(
         raise FourDAnyoneError(f"RCP decode expected {len(camera_ids)} latent views, got {latents.shape[0]}.")
     frame_root = output_dir / "frames"
     video_root = output_dir / "videos"
-    frame_root.mkdir(parents=True, exist_ok=False)
-    video_root.mkdir(parents=True, exist_ok=False)
+    frame_root.mkdir(parents=True, exist_ok=True)
+    video_root.mkdir(parents=True, exist_ok=True)
     frame_outputs: list[Path] = []
     video_outputs: list[Path] = []
     with torch.inference_mode(), _bf16_autocast():
@@ -303,6 +325,7 @@ def _decode_rcp(
                 pipe,
                 latents[latent_index : latent_index + 1].to(dtype=pipe.torch_dtype, device=device),
                 device,
+                tiled=tiled,
             )
             frame_outputs.append(_save_rcp_jpegs(video, camera_id, frame_root))
             video_outputs.append(
@@ -354,16 +377,22 @@ def _denoise_targets(
         circular=view_plan.closed_yaw,
     )
 
+    # Pre-encode skeleton tokens once per view to eliminate 12GB 3D-Conv overhead in diffusion loop
+    encoded_skeleton_tokens = []
+    with torch.inference_mode(), _bf16_autocast():
+        for sk in skeletons:
+            sk_raw = _skeleton_group(skeleton_cache, [sk], device, channels_last=False).contiguous()
+            sk_tok = pipe.dit.encode_pose(sk_raw)
+            encoded_skeleton_tokens.append(sk_tok)
+            del sk_raw
+        torch.cuda.empty_cache()
+
     with torch.inference_mode(), _bf16_autocast():
         for step_index, groups in enumerate(tqdm(routes, desc=f"Generate {num_views} target views")):
             for view_indices in groups:
                 index = torch.tensor(view_indices, dtype=torch.long, device=device)
                 local_latents = torch.index_select(latents, 0, index)
-                local_skeletons = _skeleton_group(
-                    skeleton_cache,
-                    (skeletons[view_index] for view_index in view_indices),
-                    device,
-                )
+                local_skeletons = torch.cat([encoded_skeleton_tokens[view_index] for view_index in view_indices], dim=0)
                 timestep = pipe.scheduler.timesteps[step_index]
                 batched_timestep = timestep.unsqueeze(0).to(dtype=pipe.torch_dtype, device=device)
                 batched_timestep = torch.cat([batched_timestep] * len(view_indices), dim=0)
@@ -486,7 +515,7 @@ def generate_views(
 
         started = time.monotonic()
         rcp_root = root / "rcp"
-        rcp_root.mkdir()
+        rcp_root.mkdir(parents=True, exist_ok=True)
         _move_model(pipe.vae, device)
         frame_dirs, rcp_videos = _decode_rcp(
             pipe,
@@ -495,6 +524,7 @@ def generate_views(
             rcp_root,
             clip,
             device,
+            tiled=force_tiled_vae,
         )
         rcp_reference_videos = _load_rcp_reference_videos(frame_dirs[:4], INFERENCE.num_frames)
         rcp_reference_latents = _encode_videos(pipe, rcp_reference_videos, device, tiled=force_tiled_vae)

@@ -75,6 +75,10 @@ def flash_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, num_heads
         q = rearrange(q, "b s (n d) -> b n s d", n=num_heads)
         k = rearrange(k, "b s (n d) -> b n s d", n=num_heads)
         v = rearrange(v, "b s (n d) -> b n s d", n=num_heads)
+        if k.dtype != q.dtype:
+            k = k.to(q.dtype)
+        if v.dtype != q.dtype:
+            v = v.to(q.dtype)
         x = sageattn(q, k, v)
         x = rearrange(x, "b n s d -> b s (n d)", n=num_heads)
     else:
@@ -116,9 +120,9 @@ def precompute_freqs_cis(dim: int, end: int = 1024, theta: float = 10000.0):
 
 def rope_apply(x, freqs, num_heads):
     x = rearrange(x, "b s (n d) -> b s n d", n=num_heads)
-    x_out = torch.view_as_complex(x.to(torch.float64).reshape(
+    x_complex = torch.view_as_complex(x.float().reshape(
         x.shape[0], x.shape[1], x.shape[2], -1, 2))
-    x_out = torch.view_as_real(x_out * freqs).flatten(2)
+    x_out = torch.view_as_real(x_complex * freqs).flatten(2)
     return x_out.to(x.dtype)
 
 
@@ -527,6 +531,12 @@ class WanModel(torch.nn.Module):
             x=self.patch_size[0], y=self.patch_size[1], z=self.patch_size[2]
         )
 
+    def encode_pose(self, skeletons: torch.Tensor) -> Optional[torch.Tensor]:
+        if not self.use_pose_encoder or skeletons is None:
+            return None
+        skeleton_latents = self.pose_encoder(skeletons)
+        return rearrange(skeleton_latents, "v c f h w -> v (f h w) c")
+
     def forward(self,
                 x: torch.Tensor,
                 x_src: torch.Tensor,
@@ -618,7 +628,12 @@ class WanModel(torch.nn.Module):
 
         timestep = torch.cat([timestep, torch.zeros(v_pack, device=timestep.device, dtype=timestep.dtype)])
         if skeletons is not None:
-            skeletons = torch.cat([skeletons, -torch.ones_like(skeletons[:1]).expand(v_pack, -1, -1, -1, -1)], dim=0)
+            if skeletons.ndim == 3:
+                if v_pack > 0:
+                    pad_zeros = torch.zeros((v_pack, skeletons.shape[1], skeletons.shape[2]), device=skeletons.device, dtype=skeletons.dtype)
+                    skeletons = torch.cat([skeletons, pad_zeros], dim=0)
+            else:
+                skeletons = torch.cat([skeletons, -torch.ones_like(skeletons[:1]).expand(v_pack, -1, -1, -1, -1)], dim=0)
 
         # Expand cam_emb for viewpack views (zero vectors for packed source views)
         if cam_emb is not None:
@@ -631,9 +646,12 @@ class WanModel(torch.nn.Module):
             sinusoidal_embedding_1d(self.freq_dim, timestep).to(x.dtype))
         t_mod = self.time_projection(t).unflatten(1, (6, self.dim))
 
-        if self.use_pose_encoder:
-            skeleton_latents = self.pose_encoder(skeletons)
-            skeleton_tokens = rearrange(skeleton_latents, "v c f h w -> v (f h w) c")
+        if self.use_pose_encoder and skeletons is not None:
+            if skeletons.ndim == 3:
+                skeleton_tokens = skeletons
+            else:
+                skeleton_latents = self.pose_encoder(skeletons)
+                skeleton_tokens = rearrange(skeleton_latents, "v c f h w -> v (f h w) c")
             x = x + skeleton_tokens
 
         v = x.shape[0]

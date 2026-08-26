@@ -83,7 +83,7 @@ class ViewPlan:
 
     @property
     def rcp_camera_ids(self) -> tuple[int, ...]:
-        return RCP_CAMERA_ORDER[: self.views_per_group] if self.enable_rcp else ()
+        return RCP_CAMERA_ORDER[:4] if self.enable_rcp else ()
 
     @property
     def is_canonical_target_ring(self) -> bool:

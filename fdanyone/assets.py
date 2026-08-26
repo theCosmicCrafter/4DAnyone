@@ -48,7 +48,8 @@ MODEL_FILES = (
     CHECKPOINT,
     MHR70_REGRESSOR,
     WAN_VAE,
-    TEXT_ENCODER,
+    # TEXT_ENCODER is bypassed via precomputed prompt_context_fixed.pt
+    # TEXT_ENCODER,
     *TOKENIZER_FILES,
     GVHMR_CHECKPOINT,
     HMR2_CHECKPOINT,
@@ -97,6 +98,11 @@ def resolve_checkpoint(path: str | Path | None = None, model_dir: str | Path = "
         if not resolved.is_file():
             raise AssetError(f"Checkpoint override does not exist: {resolved}")
         return resolved
+        
+    int8_path = Path(model_dir).expanduser().resolve() / "4danyone/model_int8_convrot.safetensors"
+    if int8_path.is_file():
+        return int8_path.resolve()
+        
     return _require_file(Path(model_dir) / CHECKPOINT, "Checkpoint", "scripts/download_model.py")
 
 
@@ -130,11 +136,16 @@ def resolve_base_assets(model_dir: str | Path = "models", prefer_fp8: bool = Tru
     """Resolve the local VAE, T5 encoder, and tokenizer."""
 
     root = Path(model_dir).expanduser()
-    for relative in TOKENIZER_FILES:
-        _require_file(root / relative, "Tokenizer file", "scripts/download_model.py")
+    prompt_context = root / "4danyone/prompt_context_fixed.pt"
+    
+    if not prompt_context.is_file():
+        for relative in TOKENIZER_FILES:
+            _require_file(root / relative, "Tokenizer file", "scripts/download_model.py")
 
     text_encoder_fp8 = root / TEXT_ENCODER_FP8
-    if prefer_fp8 and text_encoder_fp8.is_file():
+    if prompt_context.is_file():
+        text_encoder = prompt_context.resolve()
+    elif prefer_fp8 and text_encoder_fp8.is_file():
         text_encoder = text_encoder_fp8.resolve()
     else:
         text_encoder = _require_file(root / TEXT_ENCODER, "Text encoder", "scripts/download_model.py")
@@ -142,5 +153,5 @@ def resolve_base_assets(model_dir: str | Path = "models", prefer_fp8: bool = Tru
     return BaseAssets(
         vae=_require_file(root / WAN_VAE, "VAE", "scripts/download_model.py"),
         text_encoder=text_encoder,
-        tokenizer=(root / TOKENIZER_DIR).expanduser().resolve(),
+        tokenizer=(root / TOKENIZER_DIR).expanduser().resolve() if (root / TOKENIZER_DIR).exists() else root,
     )

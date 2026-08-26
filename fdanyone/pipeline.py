@@ -113,6 +113,20 @@ def _worker_environment() -> dict[str, str]:
     return environment
 
 
+def _run_worker_command(cmd: list[str], env: dict) -> None:
+    proc = subprocess.run(
+        cmd,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if proc.returncode != 0:
+        err = proc.stderr.strip() or proc.stdout.strip() or f"Process exited with status {proc.returncode}"
+        LOGGER.error("Worker process failed:\n%s", err)
+        raise FourDAnyoneError(f"Worker command failed:\n{err}")
+
+
 def _run_motion(
     *,
     working_video: Path,
@@ -137,9 +151,8 @@ def _run_motion(
         },
     )
     try:
-        subprocess.run(
+        _run_worker_command(
             [worker_python, "-m", "fdanyone.motion.worker", str(request_path)],
-            check=True,
             env=_worker_environment(),
         )
     finally:
@@ -178,14 +191,13 @@ def _build_conditioning(
         },
     )
     try:
-        subprocess.run(
+        _run_worker_command(
             [
                 worker_python,
                 "-m",
                 "fdanyone.skeleton.worker",
                 str(request_path),
             ],
-            check=True,
             env=_worker_environment(),
         )
     finally:

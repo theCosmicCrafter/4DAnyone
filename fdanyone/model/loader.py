@@ -99,13 +99,13 @@ def _load_dit(checkpoint_path: Path, dtype):
         from .convrot_loader import load_convrot_model
         # Pass the meta model directly to save RAM. The loader will assign parameters.
         dit = load_convrot_model(dit, checkpoint_path, "cuda", dtype)
-        return dit.to(dtype=dtype).eval()
-        
-    state_dict = _load_checkpoint(checkpoint_path)
-    _strict_assign(dit, state_dict, "4DAnyone DiT checkpoint")
-    del state_dict
+    else:
+        state_dict = _load_checkpoint(checkpoint_path)
+        _strict_assign(dit, state_dict, "4DAnyone DiT checkpoint")
+        del state_dict
+
     # ``freqs`` is a derived, non-persistent tensor and therefore is not in the
-    # state dict populated above.
+    # state dict populated above. Must be populated on GPU.
     dit.freqs = precompute_freqs_cis_3d(WAN22_TI2V_5B_CONFIG["dim"] // WAN22_TI2V_5B_CONFIG["num_heads"])
     return dit.eval().requires_grad_(False)
 
@@ -223,9 +223,18 @@ def _load_vae(path: Path, dtype):
         0.7468,
         0.7744,
     )
-    vae.mean = torch.tensor(mean)
-    vae.std = torch.tensor(std)
+    vae.mean = torch.tensor(mean, dtype=dtype).view(1, -1, 1, 1, 1)
+    vae.std = torch.tensor(std, dtype=dtype).view(1, -1, 1, 1, 1)
     vae.scale = [vae.mean, 1.0 / vae.std]
+
+    # Patch with Triton-fused RMSNorm+SiLU kernels for ~1.4x VAE decode speedup
+    try:
+        from fdanyone.model.triton_vae import patch_wan_vae
+        vae = patch_wan_vae(vae, autotune=False)
+    except ImportError as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Could not apply Triton VAE patch: {e}")
+
     return vae.to(dtype=dtype).eval().requires_grad_(False)
 
 
@@ -272,8 +281,23 @@ def load_pipeline(
 
     pipe.dit = _load_dit(ckpt_path, dtype)
     pipe.vae = _load_vae(assets.vae, dtype)
-    pipe.text_encoder = _load_text_encoder(assets.text_encoder, dtype)
-    pipe.prompter.fetch_models(pipe.text_encoder)
+    
+    # Text Encoder Bypass (Phase 3 Optimization)
+    prompt_context_path = Path("models/4danyone/prompt_context_fixed.pt")
+    if prompt_context_path.exists():
+        import logging
+        logging.getLogger(__name__).info("Found precomputed T5 prompt! Bypassing 9.5GB Text Encoder load.")
+        pipe.text_encoder = None
+        
+        # Monkey-patch encode_prompt on the pipeline to return the precomputed tensor
+        precomputed_context = torch.load(prompt_context_path).to(device=device, dtype=dtype)
+        def _mock_encode_prompt(prompt, positive=True):
+            return {"context": precomputed_context}
+        pipe.encode_prompt = _mock_encode_prompt
+    else:
+        pipe.text_encoder = _load_text_encoder(assets.text_encoder, dtype)
+        pipe.prompter.fetch_models(pipe.text_encoder)
+        
     pipe.height_division_factor = pipe.vae.upsampling_factor * 2
     pipe.width_division_factor = pipe.vae.upsampling_factor * 2
     return LoadedPipeline(pipe=pipe)

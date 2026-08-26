@@ -1,55 +1,35 @@
 import torch
 import torch.nn as nn
 from safetensors import safe_open
-from comfy_kitchen.backends.eager.quantization import mm_int8
-from comfy_kitchen.tensor.int8_utils import _build_hadamard, _rotate_activation
+from comfy_kitchen.backends.triton.quantization import int8_linear
 
 class QuantizedLinearConvRot(nn.Module):
     """
-    Custom INT8 linear module for ConvRot INT8 quantized weights.
-    Applies online group-wise Hadamard rotation to activations, dynamically 
-    quantizes to INT8, and uses tensor core INT8 GEMM.
+    Custom INT8 linear module matching ComfyUI's native Triton kernel dispatch.
+    Fuses Hadamard rotation, row-wise quantization, tensor-core GEMM, scale epilogue, 
+    and bias addition directly into a single pass.
     """
-    def __init__(self, in_features, out_features, group_size, device="cuda", dtype=torch.bfloat16):
+    def __init__(self, in_features, out_features, group_size=256, device="cuda", dtype=torch.bfloat16):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.group_size = group_size
         
-        # Buffers: They move to device automatically when .to() is called
-        # Weight is kept transposed [in_features, out_features] because mm_int8 does (M,K) @ (K,N)
-        self.register_buffer("weight", torch.empty((in_features, out_features), dtype=torch.int8, device=device))
+        # Native [out_features, in_features] layout matching safetensors and Triton kernel
+        self.register_buffer("weight", torch.empty((out_features, in_features), dtype=torch.int8, device=device))
         self.register_buffer("weight_scale", torch.empty((out_features, 1), dtype=torch.float32, device=device))
         self.register_buffer("bias", torch.zeros((out_features,), dtype=dtype, device=device))
         
-        # Build Hadamard matrix for this group_size
-        H = _build_hadamard(group_size, device=device, dtype=torch.float32)
-        self.register_buffer("H", H)
-        
     def forward(self, x):
-        # 1. Store original shape [..., in_features]
-        orig_shape = x.shape
-        x_flat = x.view(-1, self.in_features)
-        
-        # 2. Online Activation Rotation: x_rot = x @ H
-        x_rot = _rotate_activation(x_flat.float(), self.H.float(), self.group_size)
-        
-        # 3. Dynamic INT8 Row-wise Quantization of Activations
-        row_max = x_rot.abs().amax(dim=1, keepdim=True).clamp_min(1e-12)
-        x_scale = 127.0 / row_max
-        x_int8 = (x_rot * x_scale).round().clamp(-127, 127).to(torch.int8)
-        
-        # 4. INT8 GEMM -> INT32 output
-        # x_int8 is [M, K], self.weight is [K, N] => out_int32 is [M, N]
-        out_int32 = mm_int8(x_int8, self.weight)
-        
-        # 5. Fused Dequantization Epilogue + Bias
-        # dequant = out_int32 * (1.0 / x_scale) * weight_scale^T
-        dequant_x_scale = 1.0 / x_scale
-        out_fp32 = out_int32.float() * dequant_x_scale * self.weight_scale.t()
-        
-        out = out_fp32.to(x.dtype) + self.bias
-        return out.view(*orig_shape[:-1], self.out_features)
+        return int8_linear(
+            x,
+            self.weight,
+            self.weight_scale,
+            bias=self.bias,
+            out_dtype=x.dtype,
+            convrot=True,
+            convrot_groupsize=self.group_size,
+        )
 
 def load_convrot_model(model, checkpoint_path, device, dtype):
     """
@@ -69,48 +49,45 @@ def load_convrot_model(model, checkpoint_path, device, dtype):
             
     group_size = 256
     
-    # 1. Swap standard nn.Linear layers for QuantizedLinearConvRot on 'meta' device
-    for name, module in list(model.named_modules()):
-        if name in quantized_prefixes and isinstance(module, nn.Linear):
-            parent_name = ".".join(name.split(".")[:-1])
-            child_name = name.split(".")[-1]
-            parent = model.get_submodule(parent_name) if parent_name else model
-            
-            quantized_layer = QuantizedLinearConvRot(
-                in_features=module.in_features, 
-                out_features=module.out_features, 
-                group_size=group_size, 
-                device="meta", 
-                dtype=dtype
-            )
-            setattr(parent, child_name, quantized_layer)
-            
-    import json
-    import struct
-    import numpy as np
-    
+    # 1. Swap Linear -> QuantizedLinearConvRot for all quantized layers
+    for name, module in model.named_modules():
+        for child_name, child in module.named_children():
+            full_child_name = f"{name}.{child_name}" if name else child_name
+            if full_child_name in quantized_prefixes and isinstance(child, nn.Linear):
+                quant_layer = QuantizedLinearConvRot(
+                    in_features=child.in_features,
+                    out_features=child.out_features,
+                    group_size=group_size,
+                    device=device,
+                    dtype=dtype
+                )
+                setattr(module, child_name, quant_layer)
+                
     # 2. Iterate and stream weights directly from disk to GPU bypassing Windows mmap limits
     logger.info(f"Streaming INT8 layers from disk to device (bypassing mmap)...")
     
     with open(checkpoint_path, "rb") as f:
         header_size_bytes = f.read(8)
-        header_size = struct.unpack("<Q", header_size_bytes)[0]
+        header_size = int.from_bytes(header_size_bytes, "little")
+        import json
         header_json = f.read(header_size).decode("utf-8")
-        metadata = json.loads(header_json)
-        data_start = 8 + header_size
+        header = json.loads(header_json)
         
-        for k, info in metadata.items():
-            if k == "__metadata__" or k.endswith(".comfy_quant"):
+        data_offset_base = 8 + header_size
+        
+        for k, info in header.items():
+            if k == "__metadata__":
                 continue
                 
-            # Read chunk manually
-            dtype_str = info["dtype"]
-            shape = info["shape"]
             offsets = info["data_offsets"]
-            length = offsets[1] - offsets[0]
+            shape = info["shape"]
+            dtype_str = info["dtype"]
             
-            f.seek(data_start + offsets[0])
-            buffer = f.read(length)
+            f.seek(data_offset_base + offsets[0])
+            buffer = f.read(offsets[1] - offsets[0])
+            
+            import struct
+            import numpy as np
             
             if dtype_str == "I8":
                 arr = np.frombuffer(buffer, dtype=np.int8)
@@ -129,9 +106,7 @@ def load_convrot_model(model, checkpoint_path, device, dtype):
                 continue
                 
             is_quantized = any(k.startswith(p + ".") for p in quantized_prefixes)
-            if is_quantized and k.endswith(".weight"):
-                tensor = tensor.t().contiguous().to(device)
-            elif is_quantized:
+            if is_quantized:
                 tensor = tensor.to(device)
             elif not is_quantized and (tensor.dtype in (torch.float32, torch.float16)):
                 tensor = tensor.to(device=device, dtype=dtype)
@@ -150,5 +125,5 @@ def load_convrot_model(model, checkpoint_path, device, dtype):
             except AttributeError:
                 logger.warning(f"Warning: skipped {k} (not in model)")
                 
-    logger.info("Successfully loaded ConvRot INT8 model.")
+    logger.info("Successfully loaded and initialized INT8 ConvRot model using ComfyUI Triton backend.")
     return model

@@ -391,7 +391,8 @@ def write_gvhmr_video(clip: CanonicalClip, path: str | Path) -> Path:
         stream.width = clip.width
         stream.height = clip.height
         stream.pix_fmt = "rgb24"
-        stream.options = {"crf": "0", "preset": "medium"}
+        # Use ultrafast to completely disable x264 lookahead and B-frames, bypassing the ~33MB malloc failure on low-RAM machines for 4K videos
+        stream.options = {"crf": "0", "preset": "ultrafast"}
         for index, canonical_frame in enumerate(clip.frames):
             frame = av.VideoFrame.from_ndarray(canonical_frame.rgb, format="rgb24")
             frame.pts = index

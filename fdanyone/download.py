@@ -27,6 +27,7 @@ from fdanyone.assets import (
     BIREFNET_REPO_ID,
     BIREFNET_REVISION,
     EXAMPLE_FILES,
+    CHECKPOINT,
     GVHMR_LINKS,
     HF_REPO_ID,
     HF_REVISION,
@@ -144,7 +145,15 @@ def ensure_models(
 
     require_gvhmr_checkout(gvhmr_root)
     models = Path(model_dir).expanduser().resolve()
-    missing = [relative for relative in MODEL_FILES if not (models / relative).is_file()]
+    missing = []
+    for relative in MODEL_FILES:
+        target = models / relative
+        if target.is_file():
+            continue
+        if relative == CHECKPOINT and (models / "4danyone/model_int8_convrot.safetensors").is_file():
+            continue
+        missing.append(relative)
+
     if missing:
         LOGGER.info("Downloading %d model files from %s (first run only)", len(missing), HF_REPO_ID)
         # Repository paths match the local layout, so download straight into
